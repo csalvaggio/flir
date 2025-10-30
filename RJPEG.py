@@ -12,7 +12,9 @@ import PIL.Image
 
 class RJPEG(object):
 
-    def __init__(self, path: str, use_embedded_radiance: bool = False) -> None:
+    def __init__(self, path: str,
+                 calibration_coefficients: np.ndarray = None) -> None:
+
         if shutil.which("exiftool") is None:
             msg = f"exiftool not found on PATH. Please install ExifTool "
             msg += f"and try again."
@@ -28,23 +30,26 @@ class RJPEG(object):
             msg = f"The RJPEG path provided is not readable: {path}"
             raise PermissionError(msg)
 
-        self._path: str = path
         self._metadata: dict[str, Any] = self._read_metadata(path)
         self._raw_counts: np.ndarray = \
             self._extract_embedded_raw_thermal_image(path)
         self._radiance: Optional[np.ndarray] = None
 
-        if use_embedded_radiance:
+        if calibration_coefficients is not None:
+            self._compute_radiance_using_calibration_coefficients(
+                calibration_coefficients
+            )
+        else:
             self._compute_radiance_using_embedded_flir_approach()
 
     # ---------- Properties ----------
     @property
-    def path(self) -> str:
-        return self._path
-
-    @property
     def shape(self) -> tuple[int, int]:
         return tuple(self._raw_counts.shape[:2])
+
+    @property
+    def size(self) -> int:
+        return int(self._raw_counts.size)
     
     @property
     def dtype(self) -> np.dtype:
@@ -89,6 +94,7 @@ class RJPEG(object):
 
         return img
 
+    @property
     def raw_counts(self) -> np.ndarray:
         return self._raw_counts
 
@@ -96,7 +102,7 @@ class RJPEG(object):
         PIL.Image.fromarray(self._raw_counts).save(path)
 
     # ---------- Radiance computation ----------
-    def _compute_radiance_using_embedded_flir_approach(self) -> np.ndarray:
+    def _compute_radiance_using_embedded_flir_approach(self) -> None:
         """
           Compute sensor-reaching radiance from raw counts according to
 
@@ -114,15 +120,16 @@ class RJPEG(object):
 
         denominator = \
             (R2 * (raw_counts.astype(np.float32) + O)).astype(np.float32)
-
         bad_pixels = denominator <= 0
         denominator[bad_pixels] = np.nan
-
         L = (R1 / denominator - F)
+
         self._radiance = L.astype(np.float32, copy = False)
 
-        return self._radiance
+    def _compute_radiance_using_calibration_coefficients(self) -> None:
+        pass
 
+    @property
     def radiance(self) -> Optional[np.ndarray]:
         return self._radiance
 
@@ -143,13 +150,6 @@ if __name__ == '__main__':
         help="Path to a FLIR radiometric JPEG"
     )
     ap.add_argument(
-        "-e",
-        "--use_embedded_radiance",
-        action="store_true",
-        default=False,
-        help="Use embedded FLIR radiance approach [default: False]",
-    )
-    ap.add_argument(
         "-r",
         "--rawpath",
         default=None,
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     )
     args = ap.parse_args()
 
-    src = RJPEG(args.path, use_embedded_radiance=args.use_embedded_radiance)
+    src = RJPEG(args.path)
 
     # Access all metadata items
     for key, value in src.metadata().items():
@@ -174,8 +174,9 @@ if __name__ == '__main__':
 
     # Report back the size and type of the embedded raw image
     rows, cols = src.shape
+    size = src.size
     dtype = src.dtype
-    print(f"{cols} x {rows} ({dtype})")
+    print(f"{cols} x {rows} [{size}] ({dtype})")
 
     # Write raw counts to TIFF (uint16)
     if args.rawpath:
@@ -184,7 +185,7 @@ if __name__ == '__main__':
 
     # Write radiance to TIFF (float32)
     if args.radpath:
-        if src.radiance() is None:
+        if src.radiance is None:
             print(f"RJPEG object contains no radiance, ignoring write request")
         else:
             print(f"Writing radiance to {args.radpath}")
