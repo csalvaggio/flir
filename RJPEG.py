@@ -1,18 +1,18 @@
+import io
 import json
 import os
 import shutil
 import subprocess
+from typing import Any, Optional
 
 import numpy as np
-
-import io
 import PIL
 import PIL.Image
 
 
 class RJPEG(object):
 
-    def __init__(self, path: str, use_embedded_radiance: bool=False):
+    def __init__(self, path: str, use_embedded_radiance: bool = False) -> None:
         if shutil.which("exiftool") is None:
             msg = f"exiftool not found on PATH. Please install ExifTool "
             msg += f"and try again."
@@ -28,17 +28,31 @@ class RJPEG(object):
             msg = f"The RJPEG path provided is not readable: {path}"
             raise PermissionError(msg)
 
-        self._path = path
-        self._metadata = RJPEG._read_metadata(path)
-        self._raw_counts = RJPEG._extract_embedded_raw_thermal_image(path)
+        self._path: str = path
+        self._metadata: dict[str, Any] = self._read_metadata(path)
+        self._raw_counts: np.ndarray = \
+            self._extract_embedded_raw_thermal_image(path)
+        self._radiance: Optional[np.ndarray] = None
 
         if use_embedded_radiance:
             self._compute_radiance_using_embedded_flir_approach()
-        else:
-            self._radiance = None
 
+    # ---------- Properties ----------
+    @property
+    def path(self) -> str:
+        return self._path
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return tuple(self._raw_counts.shape[:2])
+    
+    @property
+    def dtype(self) -> np.dtype:
+        return self._raw_counts.dtype
+
+    # ---------- Metadata ----------
     @staticmethod
-    def _read_metadata(path: str):
+    def _read_metadata(path: str) -> dict[str, Any]:
         cmd = ["exiftool", "-j", "-n", path]
         result = subprocess.run(
                     cmd,
@@ -49,17 +63,18 @@ class RJPEG(object):
         metadata = json.loads(result.stdout)[0]
         return metadata
 
-    def metadata(self, key: str=None):
+    def metadata(self, key: Optional[str] = None) -> Any:
         if key is None:
-            return self._metadata
+            return dict(self._metadata)
         try:
             return self._metadata[key]
         except KeyError:
             msg = f"Provided key not found in metadata: {key}"
             raise KeyError(msg) from None
 
+    # ---------- Raw extraction ----------
     @staticmethod
-    def _extract_embedded_raw_thermal_image(path: str):
+    def _extract_embedded_raw_thermal_image(path: str) -> np.ndarray:
         cmd = ["exiftool", "-b", "-RawThermalImage", path]
         result = subprocess.run(
                     cmd,
@@ -74,13 +89,14 @@ class RJPEG(object):
 
         return img
 
-    def raw_counts(self):
+    def raw_counts(self) -> np.ndarray:
         return self._raw_counts
 
-    def write_raw_counts_to_tiff(self, path: str):
+    def write_raw_counts_to_tiff(self, path: str) -> None:
         PIL.Image.fromarray(self._raw_counts).save(path)
 
-    def _compute_radiance_using_embedded_flir_approach(self):
+    # ---------- Radiance computation ----------
+    def _compute_radiance_using_embedded_flir_approach(self) -> np.ndarray:
         """
           Compute sensor-reaching radiance from raw counts according to
 
@@ -89,23 +105,28 @@ class RJPEG(object):
                    R2 * (raw_count + O)
 
         """
-        R1 = self._metadata["PlanckR1"]
-        R2 = self._metadata["PlanckR2"]
-        O  = self._metadata["PlanckO"]
-        F  = self._metadata["PlanckF"]
-        B =  self._metadata["PlanckB"]
+        R1 = float(self._metadata["PlanckR1"])
+        R2 = float(self._metadata["PlanckR2"])
+        O  = float(self._metadata["PlanckO"])
+        F  = float(self._metadata["PlanckF"])
 
         raw_counts = (2**16 - 1) - self._raw_counts
 
-        denominator = (R2 * (raw_counts + O)).astype(np.float32)
+        denominator = \
+            (R2 * (raw_counts.astype(np.float32) + O)).astype(np.float32)
+
         bad_pixels = denominator <= 0
         denominator[bad_pixels] = np.nan
-        self._radiance = (R1 / denominator - F).astype(np.float32)
 
-    def radiance(self):
+        L = (R1 / denominator - F)
+        self._radiance = L.astype(np.float32, copy = False)
+
         return self._radiance
 
-    def write_radiance_to_tiff(self, path: str):
+    def radiance(self) -> Optional[np.ndarray]:
+        return self._radiance
+
+    def write_radiance_to_tiff(self, path: str) -> None:
         PIL.Image.fromarray(self._radiance, mode="F").save(path)
 
 
@@ -117,31 +138,43 @@ if __name__ == '__main__':
 
     description = "Test harness to read in and create a FLIR RJPEG object"
     ap = argparse.ArgumentParser(description=description)
-    help_msg = "path to a FLIR radiometric JPEG"
-    ap.add_argument("path", help=help_msg)
-    help_msg = "use embedded FLIR radiance approach [default is False]"
-    ap.add_argument("-e", "--use_embedded_radiance",
-                    action="store_true", default=False, help=help_msg)
-    help_msg = "output path to TIFF to store raw counts (uint16)"
-    ap.add_argument("-r", "--rawpath", default=None, help=help_msg)
-    help_msg = "output path to TIFF to store radiance (float32)"
-    ap.add_argument("-l", "--radpath", default=None, help=help_msg)
+    ap.add_argument(
+        "path",
+        help="Path to a FLIR radiometric JPEG"
+    )
+    ap.add_argument(
+        "-e",
+        "--use_embedded_radiance",
+        action="store_true",
+        default=False,
+        help="Use embedded FLIR radiance approach [default: False]",
+    )
+    ap.add_argument(
+        "-r",
+        "--rawpath",
+        default=None,
+        help="Output path to TIFF to store raw counts (uint16)",
+    )
+    ap.add_argument(
+        "-l",
+        "--radpath",
+        default=None,
+        help="Output path to TIFF to store radiance (float32)",
+    )
     args = ap.parse_args()
 
-    src = flir.RJPEG(args.path,
-                     use_embedded_radiance=args.use_embedded_radiance)
+    src = RJPEG(args.path, use_embedded_radiance=args.use_embedded_radiance)
 
     # Access all metadata items
     for key, value in src.metadata().items():
         print(f"{key}: {value}")
 
     # Access a single metadata item
-    print(f"ImageWidth: {src.metadata("ImageWidth")}")
+    print(f"ImageWidth: {src.metadata('ImageWidth')}")
 
     # Report back the size and type of the embedded raw image
-    cols = src.raw_counts().shape[1]
-    rows = src.raw_counts().shape[0]
-    dtype = src.raw_counts().dtype
+    rows, cols = src.shape
+    dtype = src.dtype
     print(f"{cols} x {rows} ({dtype})")
 
     # Write raw counts to TIFF (uint16)
