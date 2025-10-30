@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from typing import Any, Optional
 
 import numpy as np
@@ -91,6 +92,12 @@ class RJPEG(object):
         img = np.array(raw)
         if img.dtype != np.uint16:
             img = img.astype(np.uint16, copy=False)
+
+# I don't think this is required.  The original data is little endian.
+#        byte_order = sys.byteorder
+#        if byte_order == "little":
+#            img.byteswap(inplace=True)
+#            img = img.newbyteorder()
 
         return img
 
