@@ -6,6 +6,7 @@ A R-JPEG file contains an embedded raw thermal count image (uint16) and FLIR's p
 
 Instantiated objects will contain the raw thermal count image, the visible (RGB) image if present, and a radiance image computed using either the built-in FLIR coefficients -OR- using custom derived, pixel-by-pixel, gain/bias coefficient data.
 
+&nbsp;
 ## Requirements
 
 Python 3.9 or later
