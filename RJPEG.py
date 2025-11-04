@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import sys
@@ -32,9 +33,11 @@ class RJPEG(object):
             raise PermissionError(msg)
 
         self._metadata: dict[str, Any] = self._read_metadata(path)
+
+        self._rgb: np.ndarray = self._extract_embedded_rgb_image(path)
+
         self._raw_counts: np.ndarray = \
             self._extract_embedded_raw_thermal_image(path)
-        self._radiance: Optional[np.ndarray] = None
 
         if calibration_coefficients is not None:
             self._compute_radiance_using_calibration_coefficients(
@@ -78,6 +81,46 @@ class RJPEG(object):
             msg = f"Provided key not found in metadata: {key}"
             raise KeyError(msg) from None
 
+    # ---------- RGB extraction ----------
+    @staticmethod
+    def _extract_embedded_rgb_image(path: str) -> np.ndarray:
+        cmd = ["exiftool", "-b", "-EmbeddedImage", path]
+        result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    check=True)
+        blob = result.stdout
+
+        if not blob:
+            return None
+        else:
+            raw = PIL.Image.open(io.BytesIO(blob))
+            img = np.array(raw)
+            if img.dtype != np.uint8:
+                img = img.astype(np.uint8, copy=False)
+
+            return img
+
+    @property
+    def rgb(self) -> np.ndarray:
+        return self._rgb
+
+    def write_rgb(self, path: str) -> None:
+        # Make sure the path extension is indicative of a TIFF format file,
+        # if it is not, remove the current extension and replace it with one
+        # that is
+        p = Path(path)
+        ext = p.suffix.lower()
+        if ext not in (".tif", ".tiff"):
+            p = p.with_suffix(".tif")
+
+        if src._rgb is None:
+            msg = f"WARNING: RJPEG object contains no RGB data, "
+            msg += f"ignoring write request"
+            print(msg)
+        else:
+            PIL.Image.fromarray(self._rgb).save(p, format="TIFF")
+
     # ---------- Raw extraction ----------
     @staticmethod
     def _extract_embedded_raw_thermal_image(path: str) -> np.ndarray:
@@ -93,11 +136,12 @@ class RJPEG(object):
         if img.dtype != np.uint16:
             img = img.astype(np.uint16, copy=False)
 
-# I don't think this is required.  The original data is little endian.
-#        byte_order = sys.byteorder
-#        if byte_order == "little":
-#            img.byteswap(inplace=True)
-#            img = img.newbyteorder()
+        byte_order = img.dtype.byteorder
+        needs_swapped = \
+                (byte_order == '>' and sys.byteorder == 'little') or \
+            (byte_order == '<' and sys.byteorder == 'big')
+        if needs_swapped:
+            img = img.byteswap().newbyteorder()
 
         return img
 
@@ -105,8 +149,16 @@ class RJPEG(object):
     def raw_counts(self) -> np.ndarray:
         return self._raw_counts
 
-    def write_raw_counts_to_tiff(self, path: str) -> None:
-        PIL.Image.fromarray(self._raw_counts).save(path)
+    def write_raw_counts(self, path: str) -> None:
+        # Make sure the path extension is indicative of a TIFF format file,
+        # if it is not, remove the current extension and replace it with one
+        # that is
+        p = Path(path)
+        ext = p.suffix.lower()
+        if ext not in (".tif", ".tiff"):
+            p = p.with_suffix(".tif")
+
+        PIL.Image.fromarray(self._raw_counts).save(p, format="TIFF")
 
     # ---------- Radiance computation ----------
     def _compute_radiance_using_embedded_flir_approach(self) -> None:
@@ -134,14 +186,27 @@ class RJPEG(object):
         self._radiance = L.astype(np.float32, copy = False)
 
     def _compute_radiance_using_calibration_coefficients(self) -> None:
-        pass
+        self._radiance = None
 
     @property
     def radiance(self) -> Optional[np.ndarray]:
         return self._radiance
 
-    def write_radiance_to_tiff(self, path: str) -> None:
-        PIL.Image.fromarray(self._radiance, mode="F").save(path)
+    def write_radiance(self, path: str) -> None:
+        # Make sure the path extension is indicative of a TIFF format file,
+        # if it is not, remove the current extension and replace it with one
+        # that is
+        p = Path(path)
+        ext = p.suffix.lower()
+        if ext not in (".tif", ".tiff"):
+            p = p.with_suffix(".tif")
+
+        if src._radiance is None:
+            msg = f"WARNING: RJPEG object contains no radiance, "
+            msg += f"ignoring write request"
+            print(msg)
+        else:
+            PIL.Image.fromarray(self._radiance, mode="F").save(p, format="TIFF")
 
 
 
@@ -160,13 +225,22 @@ if __name__ == '__main__':
         "-r",
         "--rawpath",
         default=None,
-        help="Output path to TIFF to store raw counts (uint16)",
+        help="Output path to store raw counts (uint16) " \
+             "[NOTE: Must be TIFF format]"
     )
     ap.add_argument(
         "-l",
         "--radpath",
         default=None,
-        help="Output path to TIFF to store radiance (float32)",
+        help="Output path to store radiance (float32) " + \
+             "[NOTE: Must be TIFF format]"
+    )
+    ap.add_argument(
+        "-v",
+        "--rgbpath",
+        default=None,
+        help="Output path to store RGB (uint8) " + \
+             "[NOTE: Must be TIFF format]"
     )
     args = ap.parse_args()
 
@@ -185,15 +259,17 @@ if __name__ == '__main__':
     dtype = src.dtype
     print(f"{cols} x {rows} [{size}] ({dtype})")
 
-    # Write raw counts to TIFF (uint16)
+    # Write raw counts to file (uint16)
     if args.rawpath:
         print(f"Writing raw counts to {args.rawpath}")
-        src.write_raw_counts_to_tiff(args.rawpath)
+        src.write_raw_counts(args.rawpath)
 
-    # Write radiance to TIFF (float32)
+    # Write radiance to file (float32)
     if args.radpath:
-        if src.radiance is None:
-            print(f"RJPEG object contains no radiance, ignoring write request")
-        else:
-            print(f"Writing radiance to {args.radpath}")
-            src.write_radiance_to_tiff(args.radpath)
+        print(f"Writing radiance to {args.radpath}")
+        src.write_radiance(args.radpath)
+
+    # Write RGB to file (uint8)
+    if args.rgbpath:
+        print(f"Writing RGB to {args.rgbpath}")
+        src.write_rgb(args.rgbpath)
