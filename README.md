@@ -12,13 +12,16 @@ Instantiated objects will contain the raw thermal count image, the visible (RGB)
 Python 3.9 or later
 
 Non-standard Python modules required include
-
-
 ```
 numpy
-PIL
-PIL.Image
+Pillow
 ```
+
+If PIL is not available
+```
+pip install Pillow
+```
+
 
 &nbsp;
 ## Contact
