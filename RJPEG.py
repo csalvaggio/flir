@@ -175,7 +175,7 @@ class RJPEG(object):
         O  = float(self._metadata["PlanckO"])
         F  = float(self._metadata["PlanckF"])
 
-        raw_counts = (2**16 - 1) - self._raw_counts
+        raw_counts = (2**16 - 1) - O - self._raw_counts
 
         denominator = \
             (R2 * (raw_counts.astype(np.float32) + O)).astype(np.float32)
