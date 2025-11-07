@@ -48,16 +48,25 @@ class RJPEG(object):
 
     # ---------- Properties ----------
     @property
-    def shape(self) -> tuple[int, int]:
-        return tuple(self._raw_counts.shape[:2])
+    def shape(self) -> Optional[tuple[int, int]]:
+        if self._raw_counts is not None:
+            return tuple(self._raw_counts.shape[:2])
+        else:
+            return None
 
     @property
-    def size(self) -> int:
-        return int(self._raw_counts.size)
+    def size(self) -> Optional[int]:
+        if self._raw_counts is not None:
+            return int(self._raw_counts.size)
+        else:
+            return None
     
     @property
-    def dtype(self) -> np.dtype:
-        return self._raw_counts.dtype
+    def dtype(self) -> Optional[np.dtype]:
+        if self._raw_counts is not None:
+            return self._raw_counts.dtype
+        else:
+            return None
 
     # ---------- Metadata ----------
     @staticmethod
@@ -83,7 +92,7 @@ class RJPEG(object):
 
     # ---------- RGB extraction ----------
     @staticmethod
-    def _extract_embedded_rgb_image(path: str) -> np.ndarray:
+    def _extract_embedded_rgb_image(path: str) -> Optional[np.ndarray]:
         cmd = ["exiftool", "-b", "-EmbeddedImage", path]
         result = subprocess.run(
                     cmd,
@@ -102,28 +111,27 @@ class RJPEG(object):
             return img
 
     @property
-    def rgb(self) -> np.ndarray:
+    def rgb(self) -> Optional[np.ndarray]:
         return self._rgb
 
     def write_rgb(self, path: str) -> None:
-        # Make sure the path extension is indicative of a TIFF format file,
-        # if it is not, remove the current extension and replace it with one
-        # that is
-        p = Path(path)
-        ext = p.suffix.lower()
-        if ext not in (".tif", ".tiff"):
-            p = p.with_suffix(".tif")
-
-        if src._rgb is None:
+        if src._rgb is not None:
+            # Make sure the path extension is indicative of a TIFF format file,
+            # if it is not, remove the current extension and replace it with one
+            # that is
+            p = Path(path)
+            ext = p.suffix.lower()
+            if ext not in (".tif", ".tiff"):
+                p = p.with_suffix(".tif")
+            PIL.Image.fromarray(self._rgb).save(p, format="TIFF")
+        else:
             msg = f"WARNING: RJPEG object contains no RGB data, "
             msg += f"ignoring write request"
             print(msg)
-        else:
-            PIL.Image.fromarray(self._rgb).save(p, format="TIFF")
 
     # ---------- Raw extraction ----------
     @staticmethod
-    def _extract_embedded_raw_thermal_image(path: str) -> np.ndarray:
+    def _extract_embedded_raw_thermal_image(path: str) -> Optional[np.ndarray]:
         cmd = ["exiftool", "-b", "-RawThermalImage", path]
         result = subprocess.run(
                     cmd,
@@ -131,34 +139,41 @@ class RJPEG(object):
                     check=True)
         blob = result.stdout
 
-        raw = PIL.Image.open(io.BytesIO(blob))
-        img = np.array(raw)
-        if img.dtype != np.uint16:
-            img = img.astype(np.uint16, copy=False)
+        if not blob:
+            return None
+        else:
+            raw = PIL.Image.open(io.BytesIO(blob))
+            img = np.array(raw)
+            if img.dtype != np.uint16:
+                img = img.astype(np.uint16, copy=False)
 
-        byte_order = img.dtype.byteorder
-        needs_swapped = \
-                (byte_order == '>' and sys.byteorder == 'little') or \
-            (byte_order == '<' and sys.byteorder == 'big')
-        if needs_swapped:
-            img = img.byteswap().newbyteorder()
+            byte_order = img.dtype.byteorder
+            needs_swapped = \
+                    (byte_order == '>' and sys.byteorder == 'little') or \
+                (byte_order == '<' and sys.byteorder == 'big')
+            if needs_swapped:
+                img = img.byteswap().newbyteorder()
 
-        return img
+            return img
 
     @property
-    def raw_counts(self) -> np.ndarray:
+    def raw_counts(self) -> Optional[np.ndarray]:
         return self._raw_counts
 
     def write_raw_counts(self, path: str) -> None:
-        # Make sure the path extension is indicative of a TIFF format file,
-        # if it is not, remove the current extension and replace it with one
-        # that is
-        p = Path(path)
-        ext = p.suffix.lower()
-        if ext not in (".tif", ".tiff"):
-            p = p.with_suffix(".tif")
-
-        PIL.Image.fromarray(self._raw_counts).save(p, format="TIFF")
+        if src._raw_counts is not None:
+            # Make sure the path extension is indicative of a TIFF format file,
+            # if it is not, remove the current extension and replace it with one
+            # that is
+            p = Path(path)
+            ext = p.suffix.lower()
+            if ext not in (".tif", ".tiff"):
+                p = p.with_suffix(".tif")
+            PIL.Image.fromarray(self._raw_counts).save(p, format="TIFF")
+        else:
+            msg = f"WARNING: RJPEG object contains no raw counts, "
+            msg += f"ignoring write request"
+            print(msg)
 
     # ---------- Radiance computation ----------
     def _compute_radiance_using_embedded_flir_approach(self) -> None:
@@ -170,20 +185,23 @@ class RJPEG(object):
                    R2 * (raw_count + O)
 
         """
-        R1 = float(self._metadata["PlanckR1"])
-        R2 = float(self._metadata["PlanckR2"])
-        O  = float(self._metadata["PlanckO"])
-        F  = float(self._metadata["PlanckF"])
+        if self._raw_counts is not None:
+            R1 = float(self._metadata["PlanckR1"])
+            R2 = float(self._metadata["PlanckR2"])
+            O  = float(self._metadata["PlanckO"])
+            F  = float(self._metadata["PlanckF"])
 
-        raw_counts = (2**16 - 1) - O - self._raw_counts
+            raw_counts = (2**16 - 1) - O - self._raw_counts
 
-        denominator = \
-            (R2 * (raw_counts.astype(np.float32) + O)).astype(np.float32)
-        bad_pixels = denominator <= 0
-        denominator[bad_pixels] = np.nan
-        L = (R1 / denominator - F)
+            denominator = \
+                (R2 * (raw_counts.astype(np.float32) + O)).astype(np.float32)
+            bad_pixels = denominator <= 0
+            denominator[bad_pixels] = np.nan
+            L = (R1 / denominator - F)
 
-        self._radiance = L.astype(np.float32, copy = False)
+            self._radiance = L.astype(np.float32, copy = False)
+        else:
+            self._radiance = None
 
     def _compute_radiance_using_calibration_coefficients(self) -> None:
         self._radiance = None
@@ -193,20 +211,19 @@ class RJPEG(object):
         return self._radiance
 
     def write_radiance(self, path: str) -> None:
-        # Make sure the path extension is indicative of a TIFF format file,
-        # if it is not, remove the current extension and replace it with one
-        # that is
-        p = Path(path)
-        ext = p.suffix.lower()
-        if ext not in (".tif", ".tiff"):
-            p = p.with_suffix(".tif")
-
-        if src._radiance is None:
+        if src._radiance is not None:
+            # Make sure the path extension is indicative of a TIFF format file,
+            # if it is not, remove the current extension and replace it with one
+            # that is
+            p = Path(path)
+            ext = p.suffix.lower()
+            if ext not in (".tif", ".tiff"):
+                p = p.with_suffix(".tif")
+            PIL.Image.fromarray(self._radiance, mode="F").save(p, format="TIFF")
+        else:
             msg = f"WARNING: RJPEG object contains no radiance, "
             msg += f"ignoring write request"
             print(msg)
-        else:
-            PIL.Image.fromarray(self._radiance, mode="F").save(p, format="TIFF")
 
 
 
@@ -254,9 +271,15 @@ if __name__ == '__main__':
     print(f"ImageWidth: {src.metadata('ImageWidth')}")
 
     # Report back the size and type of the embedded raw image
-    rows, cols = src.shape
-    size = src.size
-    dtype = src.dtype
+    shape = src.shape
+    if shape is not None:
+        rows, cols = shape
+        size = src.size
+        dtype = src.dtype
+    else:
+        rows, cols = None, None
+        size = None
+        dtype = None
     print(f"{cols} x {rows} [{size}] ({dtype})")
 
     # Write raw counts to file (uint16)
